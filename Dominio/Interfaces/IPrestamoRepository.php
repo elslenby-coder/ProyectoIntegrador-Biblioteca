@@ -11,4 +11,9 @@ interface IPrestamoRepository
     public function listarPorUsuario($idUsuario);
 
     public function actualizar($prestamo);
+
+    public function registrarDevolucion(
+        $idPrestamo,
+        $fechaDevolucion
+    );
 }

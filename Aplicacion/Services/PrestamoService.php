@@ -1,3 +1,4 @@
+
 <?php
 
 require_once __DIR__ . '/../../Dominio/Entidades/Prestamo.php';
@@ -23,36 +24,39 @@ class PrestamoService
         $fechaPrestamo,
         $cantidad = 1
     ) {
-        // Regla 1: la cantidad debe ser mayor que cero
-        if ($cantidad <= 0) {
+        // Validar la cantidad solicitada.
+        $cantidad = filter_var(
+            $cantidad,
+            FILTER_VALIDATE_INT
+        );
+
+        if ($cantidad === false || $cantidad <= 0) {
             throw new Exception(
-                "La cantidad debe ser mayor que cero."
+                "La cantidad debe ser un número entero mayor que cero."
             );
         }
 
-        // Buscar el libro
+        // Verificar que el libro exista.
         $libro = $this->libroRepository->obtenerPorId($libroId);
 
-        // Regla 2: el libro debe existir
         if ($libro === null) {
             throw new Exception("El libro no existe.");
         }
 
-        // Regla 3: debe existir stock disponible
+        // Comprobar la disponibilidad.
         if (!$libro->estaDisponible()) {
             throw new Exception(
                 "El libro no tiene existencias disponibles."
             );
         }
 
-        // Regla 4: no prestar más de lo disponible
         if ($cantidad > $libro->getStock()) {
             throw new Exception(
                 "La cantidad solicitada supera el stock disponible."
             );
         }
 
-        // Crear préstamo
+        // Crear la entidad del préstamo.
         $prestamo = new Prestamo(
             null,
             $usuarioId,
@@ -63,91 +67,54 @@ class PrestamoService
             $cantidad
         );
 
-        // Guardar préstamo y detalle
-        $idPrestamo =
-            $this->prestamoRepository->registrar($prestamo);
-
-        // Descontar stock
-        $nuevoStock =
-            $libro->getStock() - $cantidad;
-
-        $libro->setStock($nuevoStock);
-
-        $this->libroRepository->actualizar($libro);
-
-        return $idPrestamo;
+        // El repositorio registra el préstamo,
+        // guarda su detalle y descuenta el stock
+        // dentro de una sola transacción.
+        return $this->prestamoRepository->registrar($prestamo);
     }
 
     public function obtenerPrestamo($idPrestamo)
     {
-        return $this->prestamoRepository
-            ->obtenerPorId($idPrestamo);
+        return $this->prestamoRepository->obtenerPorId(
+            $idPrestamo
+        );
     }
 
     public function listarPrestamos()
     {
-        return $this->prestamoRepository
-            ->listarTodos();
+        return $this->prestamoRepository->listarTodos();
     }
 
     public function listarPrestamosPorUsuario($usuarioId)
     {
-        return $this->prestamoRepository
-            ->listarPorUsuario($usuarioId);
+        return $this->prestamoRepository->listarPorUsuario(
+            $usuarioId
+        );
     }
 
     public function registrarDevolucion(
         $idPrestamo,
         $fechaDevolucion
     ) {
-        // Buscar préstamo
-        $prestamo =
-            $this->prestamoRepository
-                ->obtenerPorId($idPrestamo);
-
-        // Regla 5: el préstamo debe existir
-        if ($prestamo === null) {
-            throw new Exception(
-                "El préstamo no existe."
-            );
-        }
-
-        /*
-         * Esta llamada también valida que el préstamo
-         * no haya sido devuelto anteriormente.
-         */
-        $prestamo->registrarDevolucion(
-            $fechaDevolucion
+        // Verificar que el préstamo exista.
+        $prestamo = $this->prestamoRepository->obtenerPorId(
+            $idPrestamo
         );
 
-        // Actualizar estado y fecha del préstamo
-        $resultado =
-            $this->prestamoRepository
-                ->actualizar($prestamo);
-
-        // Buscar el libro correspondiente
-        $libro =
-            $this->libroRepository
-                ->obtenerPorId(
-                    $prestamo->getIdLibro()
-                );
-
-        if ($libro === null) {
-            throw new Exception(
-                "No se encontró el libro asociado al préstamo."
-            );
+        if ($prestamo === null) {
+            throw new Exception("El préstamo no existe.");
         }
 
-        // Devolver las unidades al stock
-        $nuevoStock =
-            $libro->getStock()
-            + $prestamo->getCantidad();
+        // Aplicar las reglas de negocio de la entidad:
+        // estado y validación de devolución duplicada.
+        $prestamo->registrarDevolucion($fechaDevolucion);
 
-        $libro->setStock($nuevoStock);
-
-        $this->libroRepository
-            ->actualizar($libro);
-
-        return $resultado;
+        // El repositorio vuelve a comprobar el estado
+        // con bloqueo de fila y realiza la devolución
+        // junto con la restauración del inventario.
+        return $this->prestamoRepository->registrarDevolucion(
+            $idPrestamo,
+            $fechaDevolucion
+        );
     }
 }

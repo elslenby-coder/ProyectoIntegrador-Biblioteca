@@ -1,17 +1,31 @@
+
 <?php
 
 require_once __DIR__ . '/../Infraestructura/Repositories/LibroRepository.php';
+require_once __DIR__ . '/../Infraestructura/Database/Conexion.php';
 require_once __DIR__ . '/../Aplicacion/Services/LibroService.php';
 
 $mensaje = "";
 $error = "";
+$libros = [];
+$categorias = [];
 
 try {
-
     $libroRepository = new LibroRepository();
     $libroService = new LibroService($libroRepository);
 
-    // Registrar libro
+    // Consultar categorías existentes.
+    $conexion = (new Conexion())->conectar();
+
+    $consultaCategorias = $conexion->query(
+        "SELECT id, nombre
+         FROM categorias
+         ORDER BY nombre"
+    );
+
+    $categorias = $consultaCategorias->fetchAll(PDO::FETCH_ASSOC);
+
+    // Registrar libro.
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $titulo = trim($_POST["titulo"] ?? "");
@@ -19,25 +33,26 @@ try {
         $isbn = trim($_POST["isbn"] ?? "");
         $anioPublicacion = trim($_POST["anio_publicacion"] ?? "");
         $stock = trim($_POST["stock"] ?? "");
-        $categoriaId = trim($_POST["categoria_id"] ?? "");
+        $categoriaId = $_POST["categoria_id"] ?? "";
 
-        if (
-            $titulo === "" ||
-            $autor === "" ||
-            $stock === "" ||
-            $categoriaId === ""
-        ) {
+        // Verificar que la categoría exista.
+        $categoriaValida = false;
+
+        foreach ($categorias as $categoria) {
+            if ((string) $categoria["id"] === (string) $categoriaId) {
+                $categoriaValida = true;
+                break;
+            }
+        }
+
+        if (!$categoriaValida) {
             throw new Exception(
-                "Título, autor, stock y categoría son obligatorios."
+                "Debe seleccionar una categoría existente."
             );
         }
 
-        if (!is_numeric($stock) || $stock < 0) {
-            throw new Exception(
-                "El stock debe ser un número igual o mayor que cero."
-            );
-        }
-
+        // Las demás validaciones se realizan
+        // en la capa de aplicación.
         $libroService->registrarLibro(
             $titulo,
             $autor,
@@ -50,18 +65,42 @@ try {
         $mensaje = "Libro registrado correctamente.";
     }
 
-    // Consultar libros
     $libros = $libroService->listarLibros();
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
 
-    $error = $e->getMessage();
+    // Registrar detalles técnicos sin mostrarlos.
+    error_log("Error en libros.php: " . $e->getMessage());
 
-    try {
-        $libros = $libroService->listarLibros();
-    } catch (Exception $ex) {
-        $libros = [];
+    if ($e instanceof PDOException) {
+        if ($e->getCode() == "23000") {
+            $error = "No se pudo registrar el libro. "
+                   . "Verifique el ISBN y la categoría.";
+        } else {
+            $error = "Ocurrió un error al guardar el libro.";
+        }
+    } elseif ($e instanceof Exception) {
+        $error = $e->getMessage();
+    } else {
+        $error = "Ocurrió un error inesperado.";
     }
+
+    if (isset($libroService)) {
+        try {
+            $libros = $libroService->listarLibros();
+        } catch (Throwable $ex) {
+            $libros = [];
+        }
+    }
+}
+
+function escapar($valor)
+{
+    return htmlspecialchars(
+        (string) ($valor ?? ""),
+        ENT_QUOTES,
+        "UTF-8"
+    );
 }
 
 ?>
@@ -69,7 +108,6 @@ try {
 <html lang="es">
 
 <head>
-
     <meta charset="UTF-8">
 
     <meta
@@ -80,7 +118,6 @@ try {
     <title>Libros - Biblioteca</title>
 
     <style>
-
         * {
             box-sizing: border-box;
         }
@@ -141,11 +178,13 @@ try {
             font-weight: bold;
         }
 
-        input {
+        input,
+        select {
             width: 100%;
             padding: 10px;
             border: 1px solid #ccc;
             border-radius: 5px;
+            background: white;
         }
 
         button {
@@ -197,7 +236,6 @@ try {
         }
 
         @media (max-width: 700px) {
-
             .fila {
                 grid-template-columns: 1fr;
             }
@@ -206,19 +244,14 @@ try {
                 font-size: 12px;
             }
         }
-
     </style>
-
 </head>
 
 <body>
 
 <header>
-
     <h1>Gestión de Libros</h1>
-
     <p>Sistema de Biblioteca en Línea</p>
-
 </header>
 
 <div class="contenedor">
@@ -228,19 +261,15 @@ try {
     </a>
 
     <?php if ($mensaje !== ""): ?>
-
         <div class="mensaje">
-            <?php echo htmlspecialchars($mensaje); ?>
+            <?= escapar($mensaje) ?>
         </div>
-
     <?php endif; ?>
 
     <?php if ($error !== ""): ?>
-
         <div class="error">
-            <?php echo htmlspecialchars($error); ?>
+            <?= escapar($error) ?>
         </div>
-
     <?php endif; ?>
 
     <section class="panel">
@@ -252,27 +281,23 @@ try {
             <div class="fila">
 
                 <div class="campo">
-
                     <label>Título</label>
-
                     <input
                         type="text"
                         name="titulo"
+                        maxlength="150"
                         required
                     >
-
                 </div>
 
                 <div class="campo">
-
                     <label>Autor</label>
-
                     <input
                         type="text"
                         name="autor"
+                        maxlength="150"
                         required
                     >
-
                 </div>
 
             </div>
@@ -280,26 +305,22 @@ try {
             <div class="fila">
 
                 <div class="campo">
-
                     <label>ISBN</label>
-
                     <input
                         type="text"
                         name="isbn"
+                        maxlength="30"
                     >
-
                 </div>
 
                 <div class="campo">
-
                     <label>Año de publicación</label>
-
                     <input
                         type="number"
                         name="anio_publicacion"
-                        min="0"
+                        min="1"
+                        max="<?= date('Y') ?>"
                     >
-
                 </div>
 
             </div>
@@ -307,29 +328,32 @@ try {
             <div class="fila">
 
                 <div class="campo">
-
                     <label>Stock</label>
-
                     <input
                         type="number"
                         name="stock"
                         min="0"
+                        step="1"
+                        value="0"
                         required
                     >
-
                 </div>
 
                 <div class="campo">
+                    <label>Categoría</label>
 
-                    <label>ID de categoría</label>
+                    <select name="categoria_id" required>
+                        <option value="">
+                            Seleccione una categoría
+                        </option>
 
-                    <input
-                        type="number"
-                        name="categoria_id"
-                        min="1"
-                        required
-                    >
+                        <?php foreach ($categorias as $categoria): ?>
+                            <option value="<?= escapar($categoria['id']) ?>">
+                                <?= escapar($categoria['nombre']) ?>
+                            </option>
+                        <?php endforeach; ?>
 
+                    </select>
                 </div>
 
             </div>
@@ -349,7 +373,6 @@ try {
         <table>
 
             <thead>
-
                 <tr>
                     <th>ID</th>
                     <th>Título</th>
@@ -359,74 +382,25 @@ try {
                     <th>Stock</th>
                     <th>Categoría</th>
                 </tr>
-
             </thead>
 
             <tbody>
 
-            <?php foreach ($libros as $libro): ?>
+                <?php foreach ($libros as $libro): ?>
 
-                <tr>
+                    <tr>
+                        <td><?= escapar($libro->getIdLibro()) ?></td>
+                        <td><?= escapar($libro->getTitulo()) ?></td>
+                        <td><?= escapar($libro->getAutor()) ?></td>
+                        <td><?= escapar($libro->getIsbn()) ?></td>
+                        <td><?= escapar($libro->getAnioPublicacion()) ?></td>
+                        <td class="disponible">
+                            <?= escapar($libro->getStock()) ?>
+                        </td>
+                        <td><?= escapar($libro->getCategoriaId()) ?></td>
+                    </tr>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getIdLibro()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getTitulo()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getAutor()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getIsbn()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getAnioPublicacion()
-                        );
-                        ?>
-                    </td>
-
-                    <td class="disponible">
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getStock()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $libro->getCategoriaId()
-                        );
-                        ?>
-                    </td>
-
-                </tr>
-
-            <?php endforeach; ?>
+                <?php endforeach; ?>
 
             </tbody>
 
@@ -437,5 +411,4 @@ try {
 </div>
 
 </body>
-
 </html>

@@ -1,0 +1,17 @@
+
+# Configuraciones privadas
+.env
+.env.*
+*.env
+biblioteca.env
+
+# Archivos comprimidos y respaldos
+*.zip
+*.bak
+
+# Archivos temporales
+*.log
+*.tmp
+
+# Configuracion del editor
+.vscode/

@@ -14,7 +14,7 @@ try {
     );
 
     // Prestamo que vamos a devolver
-    $idPrestamo = 3;
+    $idPrestamo = 6;
     $fechaDevolucion = date('Y-m-d');
 
     // Registrar devolución

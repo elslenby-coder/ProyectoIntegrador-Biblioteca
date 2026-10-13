@@ -1,3 +1,4 @@
+
 <?php
 
 require_once __DIR__ . '/../Infraestructura/Repositories/UsuarioRepository.php';
@@ -5,29 +6,29 @@ require_once __DIR__ . '/../Aplicacion/Services/UsuarioService.php';
 
 $mensaje = "";
 $error = "";
+$usuarios = [];
+
+function escapar($valor)
+{
+    return htmlspecialchars(
+        (string) ($valor ?? ""),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
 
 try {
     $usuarioRepository = new UsuarioRepository();
     $usuarioService = new UsuarioService($usuarioRepository);
 
-    // Registrar usuario
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-        $nombre = trim($_POST["nombre"] ?? "");
-        $apellido = trim($_POST["apellido"] ?? "");
-        $correo = trim($_POST["correo"] ?? "");
-        $telefono = trim($_POST["telefono"] ?? "");
+        $nombre = trim((string) ($_POST["nombre"] ?? ""));
+        $apellido = trim((string) ($_POST["apellido"] ?? ""));
+        $correo = trim((string) ($_POST["correo"] ?? ""));
+        $telefono = trim((string) ($_POST["telefono"] ?? ""));
 
-        if (
-            $nombre === "" ||
-            $apellido === "" ||
-            $correo === ""
-        ) {
-            throw new Exception(
-                "Nombre, apellido y correo son obligatorios."
-            );
-        }
-
+        // El servicio valida los datos antes de guardarlos.
         $usuarioService->registrarUsuario(
             $nombre,
             $apellido,
@@ -38,12 +39,52 @@ try {
         $mensaje = "Usuario registrado correctamente.";
     }
 
-    // Consultar usuarios
     $usuarios = $usuarioService->listarUsuarios();
 
-} catch (Exception $e) {
-    $error = $e->getMessage();
-    $usuarios = [];
+} catch (Throwable $e) {
+
+    // Guardar detalles técnicos en el log de PHP.
+    error_log("Error en usuarios.php: " . $e->getMessage());
+
+    if ($e instanceof PDOException) {
+
+        if ((string) $e->getCode() === "23000") {
+            $error = "No se pudo registrar el usuario. "
+                   . "Verifique que el correo no esté duplicado.";
+        } else {
+            $error = "Ocurrió un error al guardar el usuario.";
+        }
+
+    } elseif ($e instanceof Exception &&
+              get_class($e) === 'Exception' &&
+              $e->getPrevious() === null &&
+              in_array($e->getMessage(), [
+                  "Nombre, apellido y correo son obligatorios.",
+                  "El nombre no puede superar 100 caracteres.",
+                  "El apellido no puede superar 100 caracteres.",
+                  "El correo no puede superar 150 caracteres.",
+                  "Debe ingresar un correo electrónico válido.",
+                  "El teléfono contiene caracteres no válidos.",
+                  "Ya existe un usuario registrado con ese correo."
+              ], true)) {
+
+        $error = $e->getMessage();
+
+    } else {
+        $error = "No se pudo completar la operación.";
+    }
+
+    // Mantener la tabla visible cuando falle el registro.
+    if (isset($usuarioService)) {
+        try {
+            $usuarios = $usuarioService->listarUsuarios();
+        } catch (Throwable $ex) {
+            error_log(
+                "Error al consultar usuarios: " . $ex->getMessage()
+            );
+            $usuarios = [];
+        }
+    }
 }
 
 ?>
@@ -51,9 +92,7 @@ try {
 <html lang="es">
 
 <head>
-
     <meta charset="UTF-8">
-
     <meta
         name="viewport"
         content="width=device-width, initial-scale=1.0"
@@ -62,7 +101,6 @@ try {
     <title>Usuarios - Biblioteca</title>
 
     <style>
-
         * {
             box-sizing: border-box;
         }
@@ -175,13 +213,14 @@ try {
         }
 
         @media (max-width: 700px) {
-
             .fila {
                 grid-template-columns: 1fr;
             }
 
+            table {
+                font-size: 12px;
+            }
         }
-
     </style>
 
 </head>
@@ -189,11 +228,8 @@ try {
 <body>
 
 <header>
-
     <h1>Gestión de Usuarios</h1>
-
     <p>Sistema de Biblioteca en Línea</p>
-
 </header>
 
 <div class="contenedor">
@@ -203,19 +239,15 @@ try {
     </a>
 
     <?php if ($mensaje !== ""): ?>
-
         <div class="mensaje">
-            <?php echo htmlspecialchars($mensaje); ?>
+            <?= escapar($mensaje) ?>
         </div>
-
     <?php endif; ?>
 
     <?php if ($error !== ""): ?>
-
         <div class="error">
-            <?php echo htmlspecialchars($error); ?>
+            <?= escapar($error) ?>
         </div>
-
     <?php endif; ?>
 
     <section class="panel">
@@ -227,27 +259,23 @@ try {
             <div class="fila">
 
                 <div class="campo">
-
                     <label>Nombre</label>
-
                     <input
                         type="text"
                         name="nombre"
+                        maxlength="100"
                         required
                     >
-
                 </div>
 
                 <div class="campo">
-
                     <label>Apellido</label>
-
                     <input
                         type="text"
                         name="apellido"
+                        maxlength="100"
                         required
                     >
-
                 </div>
 
             </div>
@@ -255,26 +283,23 @@ try {
             <div class="fila">
 
                 <div class="campo">
-
                     <label>Correo electrónico</label>
-
                     <input
                         type="email"
                         name="correo"
+                        maxlength="150"
                         required
                     >
-
                 </div>
 
                 <div class="campo">
-
                     <label>Teléfono</label>
-
                     <input
-                        type="text"
+                        type="tel"
                         name="telefono"
+                        maxlength="20"
+                        placeholder="Ej. 8888-8888"
                     >
-
                 </div>
 
             </div>
@@ -294,7 +319,6 @@ try {
         <table>
 
             <thead>
-
                 <tr>
                     <th>ID</th>
                     <th>Nombre</th>
@@ -302,58 +326,21 @@ try {
                     <th>Correo</th>
                     <th>Teléfono</th>
                 </tr>
-
             </thead>
 
             <tbody>
 
-            <?php foreach ($usuarios as $usuario): ?>
+                <?php foreach ($usuarios as $usuario): ?>
 
-                <tr>
+                    <tr>
+                        <td><?= escapar($usuario->getIdUsuario()) ?></td>
+                        <td><?= escapar($usuario->getNombre()) ?></td>
+                        <td><?= escapar($usuario->getApellido()) ?></td>
+                        <td><?= escapar($usuario->getCorreo()) ?></td>
+                        <td><?= escapar($usuario->getTelefono()) ?></td>
+                    </tr>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $usuario->getIdUsuario()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $usuario->getNombre()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $usuario->getApellido()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $usuario->getCorreo()
-                        );
-                        ?>
-                    </td>
-
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $usuario->getTelefono()
-                        );
-                        ?>
-                    </td>
-
-                </tr>
-
-            <?php endforeach; ?>
+                <?php endforeach; ?>
 
             </tbody>
 
@@ -364,5 +351,5 @@ try {
 </div>
 
 </body>
-
 </html>
+php -v
