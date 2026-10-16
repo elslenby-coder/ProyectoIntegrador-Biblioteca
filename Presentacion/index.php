@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/verificar_sesion.php';
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -103,9 +104,16 @@
 
 <header>
     <h1>Sistema de Biblioteca en Línea</h1>
-    <p>Gestión de usuarios, libros y préstamos</p>
+    <p>Gestión de usuarios, libros, préstamos, devoluciones y reservas</p>
 </header>
-
+<div style="text-align: right; max-width: 760px; margin: 15px auto;">
+    <a href="logout.php"
+       style="background: #b02a37; color: white; padding: 10px 16px;
+              border-radius: 5px; text-decoration: none;
+              font-weight: bold; display: inline-block;">
+        Cerrar sesión
+    </a>
+</div>
 <div class="contenedor">
 
     <section class="bienvenida">
@@ -170,7 +178,18 @@
                 Registrar devolución
             </a>
         </div>
+<div class="tarjeta">
+    <h3>Reservas</h3>
 
+    <p>
+        Registro, consulta y cancelación
+        de reservas de libros.
+    </p>
+
+    <a class="boton" href="reservas.php">
+        Gestionar reservas
+    </a>
+</div>
     </section>
 
 </div>

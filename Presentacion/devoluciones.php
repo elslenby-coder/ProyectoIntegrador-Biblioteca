@@ -1,40 +1,69 @@
-<?php
 
+<?php
+require_once __DIR__ . '/verificar_sesion.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/PrestamoRepository.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/LibroRepository.php';
 require_once __DIR__ . '/../Aplicacion/Services/PrestamoService.php';
 
+// Generar token CSRF para la sesión administrativa.
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $mensaje = "";
 $error = "";
+$prestamos = [];
 
 try {
-
-    // Repositorios
+    // Repositorios.
     $prestamoRepository = new PrestamoRepository();
     $libroRepository = new LibroRepository();
 
-    // Servicio
+    // Servicio de aplicación.
     $prestamoService = new PrestamoService(
         $prestamoRepository,
         $libroRepository
     );
 
-    // Registrar devolución
+    // Registrar devolución.
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-        $idPrestamo = $_POST["prestamo_id"] ?? "";
+        // Verificar CSRF antes de modificar información.
+        $tokenRecibido = $_POST['csrf_token'] ?? '';
 
-        if ($idPrestamo === "") {
+        if (
+            !is_string($tokenRecibido) ||
+            !hash_equals(
+                $_SESSION['csrf_token'],
+                $tokenRecibido
+            )
+        ) {
             throw new Exception(
-                "Debe seleccionar un préstamo."
+                "Solicitud no autorizada."
             );
         }
 
+        $idPrestamo = $_POST["prestamo_id"] ?? "";
+
+        if (
+            !is_scalar($idPrestamo) ||
+            filter_var(
+                $idPrestamo,
+                FILTER_VALIDATE_INT,
+                ["options" => ["min_range" => 1]]
+            ) === false
+        ) {
+            throw new Exception(
+                "Debe seleccionar un préstamo válido."
+            );
+        }
+
+        $idPrestamo = (int) $idPrestamo;
         $fechaDevolucion = date("Y-m-d");
 
-        // Obtener préstamo antes de devolverlo
+        // Obtener préstamo antes de devolverlo.
         $prestamo = $prestamoService->obtenerPrestamo(
-            (int)$idPrestamo
+            $idPrestamo
         );
 
         if ($prestamo === null) {
@@ -45,13 +74,15 @@ try {
 
         $libroId = $prestamo->getIdLibro();
 
-        // Registrar devolución
+        // Registrar devolución utilizando el servicio.
+        // La transacción y el inventario se manejan
+        // desde la capa de infraestructura.
         $prestamoService->registrarDevolucion(
-            (int)$idPrestamo,
+            $idPrestamo,
             $fechaDevolucion
         );
 
-        // Consultar libro actualizado
+        // Consultar inventario actualizado.
         $libro = $libroRepository->obtenerPorId(
             $libroId
         );
@@ -64,26 +95,51 @@ try {
             . $libro->getStock();
     }
 
-    // Consultar todos los préstamos
+    // Consultar todos los préstamos.
     $prestamos = $prestamoService->listarPrestamos();
 
-} catch (Exception $e) {
+} catch (Throwable $e) {
 
-    $error = $e->getMessage();
+    error_log(
+        "Error en devoluciones.php: " . $e->getMessage()
+    );
 
-    try {
-        $prestamos = $prestamoService->listarPrestamos();
-    } catch (Exception $ex) {
-        $prestamos = [];
+    if ($e instanceof PDOException) {
+        $error = "Ocurrió un error al procesar la devolución.";
+    } elseif ($e instanceof Exception) {
+        $error = $e->getMessage();
+    } else {
+        $error = "No se pudo completar la operación.";
+    }
+
+    // Mantener visible la tabla si ocurre un error.
+    if (isset($prestamoService)) {
+        try {
+            $prestamos = $prestamoService->listarPrestamos();
+        } catch (Throwable $ex) {
+            error_log(
+                "Error al listar préstamos: "
+                . $ex->getMessage()
+            );
+            $prestamos = [];
+        }
     }
 }
 
+// Escapar datos antes de mostrarlos en HTML.
+function escapar($valor)
+{
+    return htmlspecialchars(
+        (string) ($valor ?? ""),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
 
 <head>
-
     <meta charset="UTF-8">
 
     <meta
@@ -94,7 +150,6 @@ try {
     <title>Devoluciones - Biblioteca</title>
 
     <style>
-
         * {
             box-sizing: border-box;
         }
@@ -185,6 +240,10 @@ try {
             border-radius: 5px;
         }
 
+        .tabla-scroll {
+            overflow-x: auto;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -211,25 +270,18 @@ try {
         }
 
         @media (max-width: 750px) {
-
             table {
                 font-size: 12px;
             }
-
         }
-
     </style>
-
 </head>
 
 <body>
 
 <header>
-
     <h1>Gestión de Devoluciones</h1>
-
     <p>Sistema de Biblioteca en Línea</p>
-
 </header>
 
 <div class="contenedor">
@@ -239,19 +291,15 @@ try {
     </a>
 
     <?php if ($mensaje !== ""): ?>
-
         <div class="mensaje">
-            <?php echo htmlspecialchars($mensaje); ?>
+            <?= escapar($mensaje) ?>
         </div>
-
     <?php endif; ?>
 
     <?php if ($error !== ""): ?>
-
         <div class="error">
-            <?php echo htmlspecialchars($error); ?>
+            <?= escapar($error) ?>
         </div>
-
     <?php endif; ?>
 
     <section class="panel">
@@ -260,37 +308,40 @@ try {
 
         <form method="POST">
 
+            <!-- Protección CSRF -->
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="<?= escapar($_SESSION['csrf_token']) ?>"
+            >
+
             <div class="campo">
 
-                <label>Préstamo pendiente</label>
+                <label for="prestamo_id">
+                    Préstamo pendiente
+                </label>
 
                 <select
+                    id="prestamo_id"
                     name="prestamo_id"
                     required
                 >
-
                     <option value="">
                         Seleccione un préstamo
                     </option>
 
                     <?php foreach ($prestamos as $prestamo): ?>
 
-                        <?php
-                        if (
-                            $prestamo->getEstado()
-                            === "PRESTADO"
-                        ):
-                        ?>
+                        <?php if (
+                            $prestamo->getEstado() === "PRESTADO"
+                        ): ?>
 
                             <option
-                                value="<?php
-                                    echo $prestamo
-                                        ->getIdPrestamo();
-                                ?>"
+                                value="<?= escapar(
+                                    $prestamo->getIdPrestamo()
+                                ) ?>"
                             >
-                                <?php
-
-                                echo htmlspecialchars(
+                                <?= escapar(
                                     "Préstamo ID "
                                     . $prestamo->getIdPrestamo()
                                     . " - Usuario "
@@ -299,9 +350,7 @@ try {
                                     . $prestamo->getIdLibro()
                                     . " - Cantidad "
                                     . $prestamo->getCantidad()
-                                );
-
-                                ?>
+                                ) ?>
                             </option>
 
                         <?php endif; ?>
@@ -324,104 +373,86 @@ try {
 
         <h2>Estado de préstamos</h2>
 
-        <table>
+        <div class="tabla-scroll">
 
-            <thead>
+            <table>
 
-                <tr>
-                    <th>ID</th>
-                    <th>Usuario</th>
-                    <th>Libro</th>
-                    <th>Fecha préstamo</th>
-                    <th>Fecha devolución</th>
-                    <th>Estado</th>
-                    <th>Cantidad</th>
-                </tr>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuario</th>
+                        <th>Libro</th>
+                        <th>Fecha préstamo</th>
+                        <th>Fecha devolución</th>
+                        <th>Estado</th>
+                        <th>Cantidad</th>
+                    </tr>
+                </thead>
 
-            </thead>
+                <tbody>
 
-            <tbody>
+                    <?php foreach ($prestamos as $prestamo): ?>
 
-            <?php foreach ($prestamos as $prestamo): ?>
+                        <tr>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getIdPrestamo()
+                                ) ?>
+                            </td>
 
-                <tr>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getIdUsuario()
+                                ) ?>
+                            </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdPrestamo()
-                        );
-                        ?>
-                    </td>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getIdLibro()
+                                ) ?>
+                            </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdUsuario()
-                        );
-                        ?>
-                    </td>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getFechaPrestamo()
+                                ) ?>
+                            </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdLibro()
-                        );
-                        ?>
-                    </td>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getFechaDevolucion()
+                                    ?? "Pendiente"
+                                ) ?>
+                            </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getFechaPrestamo()
-                        );
-                        ?>
-                    </td>
+                            <td class="<?=
+                                $prestamo->getEstado() === 'DEVUELTO'
+                                    ? 'devuelto'
+                                    : 'prestado'
+                            ?>">
+                                <?= escapar(
+                                    $prestamo->getEstado()
+                                ) ?>
+                            </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getFechaDevolucion()
-                            ?? "Pendiente"
-                        );
-                        ?>
-                    </td>
+                            <td>
+                                <?= escapar(
+                                    $prestamo->getCantidad()
+                                ) ?>
+                            </td>
+                        </tr>
 
-                    <td
-                        class="<?php
-                            echo $prestamo->getEstado()
-                            === 'DEVUELTO'
-                            ? 'devuelto'
-                            : 'prestado';
-                        ?>"
-                    >
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getEstado()
-                        );
-                        ?>
-                    </td>
+                    <?php endforeach; ?>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getCantidad()
-                        );
-                        ?>
-                    </td>
+                </tbody>
 
-                </tr>
+            </table>
 
-            <?php endforeach; ?>
-
-            </tbody>
-
-        </table>
+        </div>
 
     </section>
 
 </div>
 
 </body>
-
 </html>

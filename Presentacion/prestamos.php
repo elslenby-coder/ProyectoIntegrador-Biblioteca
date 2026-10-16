@@ -1,5 +1,6 @@
-<?php
 
+<?php
+require_once __DIR__ . '/verificar_sesion.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/PrestamoRepository.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/LibroRepository.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/UsuarioRepository.php';
@@ -8,11 +9,18 @@ require_once __DIR__ . '/../Aplicacion/Services/PrestamoService.php';
 require_once __DIR__ . '/../Aplicacion/Services/LibroService.php';
 require_once __DIR__ . '/../Aplicacion/Services/UsuarioService.php';
 
+// Generar token CSRF para la sesión.
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $mensaje = "";
 $error = "";
+$usuarios = [];
+$libros = [];
+$prestamos = [];
 
 try {
-
     // Repositorios
     $prestamoRepository = new PrestamoRepository();
     $libroRepository = new LibroRepository();
@@ -35,6 +43,21 @@ try {
     // Registrar préstamo
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
+        // Validar CSRF antes de cualquier operación.
+        $tokenRecibido = $_POST['csrf_token'] ?? '';
+
+        if (
+            !is_string($tokenRecibido) ||
+            !hash_equals(
+                $_SESSION['csrf_token'],
+                $tokenRecibido
+            )
+        ) {
+            throw new Exception(
+                "Solicitud no autorizada."
+            );
+        }
+
         $usuarioId = $_POST["usuario_id"] ?? "";
         $libroId = $_POST["libro_id"] ?? "";
         $cantidad = $_POST["cantidad"] ?? "";
@@ -50,6 +73,8 @@ try {
             );
         }
 
+        // Se conserva el servicio original,
+        // responsable de las reglas de negocio.
         $idPrestamo = $prestamoService->registrarPrestamo(
             (int)$usuarioId,
             (int)$libroId,
@@ -62,40 +87,48 @@ try {
             . $idPrestamo;
     }
 
-    // Datos necesarios para la pantalla
+    // Datos necesarios para la pantalla.
     $usuarios = $usuarioService->listarUsuarios();
     $libros = $libroService->listarLibros();
     $prestamos = $prestamoService->listarPrestamos();
 
 } catch (Exception $e) {
 
+    error_log(
+        "Error en prestamos.php: " . $e->getMessage()
+    );
+
     $error = $e->getMessage();
 
-    try {
-        $usuarios = $usuarioService->listarUsuarios();
-    } catch (Exception $ex) {
-        $usuarios = [];
+    if (isset($usuarioService)) {
+        try {
+            $usuarios = $usuarioService->listarUsuarios();
+        } catch (Exception $ex) {
+            $usuarios = [];
+        }
     }
 
-    try {
-        $libros = $libroService->listarLibros();
-    } catch (Exception $ex) {
-        $libros = [];
+    if (isset($libroService)) {
+        try {
+            $libros = $libroService->listarLibros();
+        } catch (Exception $ex) {
+            $libros = [];
+        }
     }
 
-    try {
-        $prestamos = $prestamoService->listarPrestamos();
-    } catch (Exception $ex) {
-        $prestamos = [];
+    if (isset($prestamoService)) {
+        try {
+            $prestamos = $prestamoService->listarPrestamos();
+        } catch (Exception $ex) {
+            $prestamos = [];
+        }
     }
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="es">
 
 <head>
-
     <meta charset="UTF-8">
 
     <meta
@@ -106,7 +139,6 @@ try {
     <title>Préstamos - Biblioteca</title>
 
     <style>
-
         * {
             box-sizing: border-box;
         }
@@ -203,6 +235,10 @@ try {
             border-radius: 5px;
         }
 
+        .tabla-scroll {
+            overflow-x: auto;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -225,7 +261,6 @@ try {
         }
 
         @media (max-width: 750px) {
-
             .fila {
                 grid-template-columns: 1fr;
             }
@@ -234,19 +269,14 @@ try {
                 font-size: 12px;
             }
         }
-
     </style>
-
 </head>
 
 <body>
 
 <header>
-
     <h1>Gestión de Préstamos</h1>
-
     <p>Sistema de Biblioteca en Línea</p>
-
 </header>
 
 <div class="contenedor">
@@ -256,19 +286,23 @@ try {
     </a>
 
     <?php if ($mensaje !== ""): ?>
-
         <div class="mensaje">
-            <?php echo htmlspecialchars($mensaje); ?>
+            <?= htmlspecialchars(
+                $mensaje,
+                ENT_QUOTES,
+                'UTF-8'
+            ) ?>
         </div>
-
     <?php endif; ?>
 
     <?php if ($error !== ""): ?>
-
         <div class="error">
-            <?php echo htmlspecialchars($error); ?>
+            <?= htmlspecialchars(
+                $error,
+                ENT_QUOTES,
+                'UTF-8'
+            ) ?>
         </div>
-
     <?php endif; ?>
 
     <section class="panel">
@@ -277,80 +311,76 @@ try {
 
         <form method="POST">
 
+            <!-- Token CSRF obligatorio -->
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="<?= htmlspecialchars(
+                    $_SESSION['csrf_token'],
+                    ENT_QUOTES,
+                    'UTF-8'
+                ) ?>"
+            >
+
             <div class="fila">
 
                 <div class="campo">
-
                     <label>Usuario</label>
 
-                    <select
-                        name="usuario_id"
-                        required
-                    >
-
+                    <select name="usuario_id" required>
                         <option value="">
                             Seleccione un usuario
                         </option>
 
                         <?php foreach ($usuarios as $usuario): ?>
-
                             <option
-                                value="<?php
-                                    echo $usuario->getIdUsuario();
-                                ?>"
+                                value="<?= htmlspecialchars(
+                                    (string)$usuario->getIdUsuario(),
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>"
                             >
-                                <?php
-                                    echo htmlspecialchars(
-                                        $usuario->getNombre()
-                                        . " "
-                                        . $usuario->getApellido()
-                                    );
-                                ?>
+                                <?= htmlspecialchars(
+                                    $usuario->getNombre()
+                                    . " "
+                                    . $usuario->getApellido(),
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>
                             </option>
-
                         <?php endforeach; ?>
-
                     </select>
-
                 </div>
 
                 <div class="campo">
-
                     <label>Libro</label>
 
-                    <select
-                        name="libro_id"
-                        required
-                    >
-
+                    <select name="libro_id" required>
                         <option value="">
                             Seleccione un libro
                         </option>
 
                         <?php foreach ($libros as $libro): ?>
-
                             <option
-                                value="<?php
-                                    echo $libro->getIdLibro();
-                                ?>"
+                                value="<?= htmlspecialchars(
+                                    (string)$libro->getIdLibro(),
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>"
                             >
-                                <?php
-                                    echo htmlspecialchars(
-                                        $libro->getTitulo()
-                                        . " - Stock: "
-                                        . $libro->getStock()
-                                    );
-                                ?>
+                                <?= htmlspecialchars(
+                                    $libro->getTitulo()
+                                    . " - Stock: "
+                                    . $libro->getStock(),
+                                    ENT_QUOTES,
+                                    'UTF-8'
+                                ) ?>
                             </option>
-
                         <?php endforeach; ?>
-
                     </select>
-
                 </div>
 
                 <div class="campo">
-
                     <label>Cantidad</label>
 
                     <input
@@ -358,9 +388,9 @@ try {
                         name="cantidad"
                         value="1"
                         min="1"
+                        step="1"
                         required
                     >
-
                 </div>
 
             </div>
@@ -377,97 +407,97 @@ try {
 
         <h2>Préstamos registrados</h2>
 
-        <table>
+        <div class="tabla-scroll">
 
-            <thead>
+            <table>
 
-                <tr>
-                    <th>ID</th>
-                    <th>Usuario</th>
-                    <th>Libro</th>
-                    <th>Fecha préstamo</th>
-                    <th>Devolución</th>
-                    <th>Estado</th>
-                    <th>Cantidad</th>
-                </tr>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuario</th>
+                        <th>Libro</th>
+                        <th>Fecha préstamo</th>
+                        <th>Devolución</th>
+                        <th>Estado</th>
+                        <th>Cantidad</th>
+                    </tr>
+                </thead>
 
-            </thead>
+                <tbody>
 
-            <tbody>
+                <?php foreach ($prestamos as $prestamo): ?>
 
-            <?php foreach ($prestamos as $prestamo): ?>
+                    <tr>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getIdPrestamo(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                <tr>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getIdUsuario(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdPrestamo()
-                        );
-                        ?>
-                    </td>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getIdLibro(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdUsuario()
-                        );
-                        ?>
-                    </td>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getFechaPrestamo(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getIdLibro()
-                        );
-                        ?>
-                    </td>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)(
+                                    $prestamo->getFechaDevolucion()
+                                    ?? "Pendiente"
+                                ),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getFechaPrestamo()
-                        );
-                        ?>
-                    </td>
+                        <td class="estado">
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getEstado(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getFechaDevolucion()
-                            ?? "Pendiente"
-                        );
-                        ?>
-                    </td>
+                        <td>
+                            <?= htmlspecialchars(
+                                (string)$prestamo->getCantidad(),
+                                ENT_QUOTES,
+                                'UTF-8'
+                            ) ?>
+                        </td>
+                    </tr>
 
-                    <td class="estado">
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getEstado()
-                        );
-                        ?>
-                    </td>
+                <?php endforeach; ?>
 
-                    <td>
-                        <?php
-                        echo htmlspecialchars(
-                            $prestamo->getCantidad()
-                        );
-                        ?>
-                    </td>
+                </tbody>
+            </table>
 
-                </tr>
-
-            <?php endforeach; ?>
-
-            </tbody>
-
-        </table>
+        </div>
 
     </section>
 
 </div>
 
 </body>
-
 </html>

@@ -1,8 +1,13 @@
 
 <?php
-
+require_once __DIR__ . '/verificar_sesion.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/UsuarioRepository.php';
 require_once __DIR__ . '/../Aplicacion/Services/UsuarioService.php';
+
+// Generar token CSRF asociado a la sesión administrativa.
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 $mensaje = "";
 $error = "";
@@ -22,6 +27,16 @@ try {
     $usuarioService = new UsuarioService($usuarioRepository);
 
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
+
+        // Verificar token CSRF antes de realizar operaciones.
+        $tokenRecibido = $_POST['csrf_token'] ?? '';
+
+        if (
+            !is_string($tokenRecibido) ||
+            !hash_equals($_SESSION['csrf_token'], $tokenRecibido)
+        ) {
+            throw new Exception("Solicitud no autorizada.");
+        }
 
         $nombre = trim((string) ($_POST["nombre"] ?? ""));
         $apellido = trim((string) ($_POST["apellido"] ?? ""));
@@ -43,7 +58,7 @@ try {
 
 } catch (Throwable $e) {
 
-    // Guardar detalles técnicos en el log de PHP.
+    // Registrar detalles técnicos en el log de PHP.
     error_log("Error en usuarios.php: " . $e->getMessage());
 
     if ($e instanceof PDOException) {
@@ -55,18 +70,21 @@ try {
             $error = "Ocurrió un error al guardar el usuario.";
         }
 
-    } elseif ($e instanceof Exception &&
-              get_class($e) === 'Exception' &&
-              $e->getPrevious() === null &&
-              in_array($e->getMessage(), [
-                  "Nombre, apellido y correo son obligatorios.",
-                  "El nombre no puede superar 100 caracteres.",
-                  "El apellido no puede superar 100 caracteres.",
-                  "El correo no puede superar 150 caracteres.",
-                  "Debe ingresar un correo electrónico válido.",
-                  "El teléfono contiene caracteres no válidos.",
-                  "Ya existe un usuario registrado con ese correo."
-              ], true)) {
+    } elseif (
+        $e instanceof Exception &&
+        get_class($e) === 'Exception' &&
+        $e->getPrevious() === null &&
+        in_array($e->getMessage(), [
+            "Nombre, apellido y correo son obligatorios.",
+            "El nombre no puede superar 100 caracteres.",
+            "El apellido no puede superar 100 caracteres.",
+            "El correo no puede superar 150 caracteres.",
+            "Debe ingresar un correo electrónico válido.",
+            "El teléfono contiene caracteres no válidos.",
+            "Ya existe un usuario registrado con ese correo.",
+            "Solicitud no autorizada."
+        ], true)
+    ) {
 
         $error = $e->getMessage();
 
@@ -86,7 +104,6 @@ try {
         }
     }
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -227,129 +244,135 @@ try {
 
 <body>
 
-<header>
-    <h1>Gestión de Usuarios</h1>
-    <p>Sistema de Biblioteca en Línea</p>
-</header>
+    <header>
+        <h1>Gestión de Usuarios</h1>
+        <p>Sistema de Biblioteca en Línea</p>
+    </header>
 
-<div class="contenedor">
+    <div class="contenedor">
 
-    <a class="volver" href="index.php">
-        ← Volver al panel principal
-    </a>
+        <a class="volver" href="index.php">
+            ← Volver al panel principal
+        </a>
 
-    <?php if ($mensaje !== ""): ?>
-        <div class="mensaje">
-            <?= escapar($mensaje) ?>
-        </div>
-    <?php endif; ?>
-
-    <?php if ($error !== ""): ?>
-        <div class="error">
-            <?= escapar($error) ?>
-        </div>
-    <?php endif; ?>
-
-    <section class="panel">
-
-        <h2>Registrar usuario</h2>
-
-        <form method="POST">
-
-            <div class="fila">
-
-                <div class="campo">
-                    <label>Nombre</label>
-                    <input
-                        type="text"
-                        name="nombre"
-                        maxlength="100"
-                        required
-                    >
-                </div>
-
-                <div class="campo">
-                    <label>Apellido</label>
-                    <input
-                        type="text"
-                        name="apellido"
-                        maxlength="100"
-                        required
-                    >
-                </div>
-
+        <?php if ($mensaje !== ""): ?>
+            <div class="mensaje">
+                <?= escapar($mensaje) ?>
             </div>
+        <?php endif; ?>
 
-            <div class="fila">
-
-                <div class="campo">
-                    <label>Correo electrónico</label>
-                    <input
-                        type="email"
-                        name="correo"
-                        maxlength="150"
-                        required
-                    >
-                </div>
-
-                <div class="campo">
-                    <label>Teléfono</label>
-                    <input
-                        type="tel"
-                        name="telefono"
-                        maxlength="20"
-                        placeholder="Ej. 8888-8888"
-                    >
-                </div>
-
+        <?php if ($error !== ""): ?>
+            <div class="error">
+                <?= escapar($error) ?>
             </div>
+        <?php endif; ?>
 
-            <button type="submit">
-                Registrar usuario
-            </button>
+        <section class="panel">
 
-        </form>
+            <h2>Registrar usuario</h2>
 
-    </section>
+            <form method="POST">
 
-    <section class="panel">
+                <!-- Protección CSRF -->
+                <input
+                    type="hidden"
+                    name="csrf_token"
+                    value="<?= escapar($_SESSION['csrf_token']) ?>"
+                >
 
-        <h2>Usuarios registrados</h2>
+                <div class="fila">
 
-        <table>
+                    <div class="campo">
+                        <label>Nombre</label>
+                        <input
+                            type="text"
+                            name="nombre"
+                            maxlength="100"
+                            required
+                        >
+                    </div>
 
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Nombre</th>
-                    <th>Apellido</th>
-                    <th>Correo</th>
-                    <th>Teléfono</th>
-                </tr>
-            </thead>
+                    <div class="campo">
+                        <label>Apellido</label>
+                        <input
+                            type="text"
+                            name="apellido"
+                            maxlength="100"
+                            required
+                        >
+                    </div>
 
-            <tbody>
+                </div>
 
-                <?php foreach ($usuarios as $usuario): ?>
+                <div class="fila">
 
+                    <div class="campo">
+                        <label>Correo electrónico</label>
+                        <input
+                            type="email"
+                            name="correo"
+                            maxlength="150"
+                            required
+                        >
+                    </div>
+
+                    <div class="campo">
+                        <label>Teléfono</label>
+                        <input
+                            type="tel"
+                            name="telefono"
+                            maxlength="20"
+                            placeholder="Ej. 8888-8888"
+                        >
+                    </div>
+
+                </div>
+
+                <button type="submit">
+                    Registrar usuario
+                </button>
+
+            </form>
+
+        </section>
+
+        <section class="panel">
+
+            <h2>Usuarios registrados</h2>
+
+            <table>
+
+                <thead>
                     <tr>
-                        <td><?= escapar($usuario->getIdUsuario()) ?></td>
-                        <td><?= escapar($usuario->getNombre()) ?></td>
-                        <td><?= escapar($usuario->getApellido()) ?></td>
-                        <td><?= escapar($usuario->getCorreo()) ?></td>
-                        <td><?= escapar($usuario->getTelefono()) ?></td>
+                        <th>ID</th>
+                        <th>Nombre</th>
+                        <th>Apellido</th>
+                        <th>Correo</th>
+                        <th>Teléfono</th>
                     </tr>
+                </thead>
 
-                <?php endforeach; ?>
+                <tbody>
 
-            </tbody>
+                    <?php foreach ($usuarios as $usuario): ?>
 
-        </table>
+                        <tr>
+                            <td><?= escapar($usuario->getIdUsuario()) ?></td>
+                            <td><?= escapar($usuario->getNombre()) ?></td>
+                            <td><?= escapar($usuario->getApellido()) ?></td>
+                            <td><?= escapar($usuario->getCorreo()) ?></td>
+                            <td><?= escapar($usuario->getTelefono()) ?></td>
+                        </tr>
 
-    </section>
+                    <?php endforeach; ?>
 
-</div>
+                </tbody>
+
+            </table>
+
+        </section>
+
+    </div>
 
 </body>
 </html>
-php -v

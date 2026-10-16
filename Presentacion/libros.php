@@ -1,9 +1,14 @@
 
 <?php
-
+require_once __DIR__ . '/verificar_sesion.php';
 require_once __DIR__ . '/../Infraestructura/Repositories/LibroRepository.php';
 require_once __DIR__ . '/../Infraestructura/Database/Conexion.php';
 require_once __DIR__ . '/../Aplicacion/Services/LibroService.php';
+
+// Generar token de seguridad CSRF.
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 $mensaje = "";
 $error = "";
@@ -28,11 +33,23 @@ try {
     // Registrar libro.
     if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-        $titulo = trim($_POST["titulo"] ?? "");
-        $autor = trim($_POST["autor"] ?? "");
-        $isbn = trim($_POST["isbn"] ?? "");
-        $anioPublicacion = trim($_POST["anio_publicacion"] ?? "");
-        $stock = trim($_POST["stock"] ?? "");
+        // Verificar CSRF antes de registrar.
+        $tokenRecibido = $_POST['csrf_token'] ?? '';
+
+        if (
+            !is_string($tokenRecibido) ||
+            !hash_equals($_SESSION['csrf_token'], $tokenRecibido)
+        ) {
+            throw new Exception("Solicitud no autorizada.");
+        }
+
+        $titulo = trim((string) ($_POST["titulo"] ?? ""));
+        $autor = trim((string) ($_POST["autor"] ?? ""));
+        $isbn = trim((string) ($_POST["isbn"] ?? ""));
+        $anioPublicacion = trim(
+            (string) ($_POST["anio_publicacion"] ?? "")
+        );
+        $stock = trim((string) ($_POST["stock"] ?? ""));
         $categoriaId = $_POST["categoria_id"] ?? "";
 
         // Verificar que la categoría exista.
@@ -51,8 +68,7 @@ try {
             );
         }
 
-        // Las demás validaciones se realizan
-        // en la capa de aplicación.
+        // Validaciones adicionales en la capa de aplicación.
         $libroService->registrarLibro(
             $titulo,
             $autor,
@@ -69,16 +85,20 @@ try {
 
 } catch (Throwable $e) {
 
-    // Registrar detalles técnicos sin mostrarlos.
     error_log("Error en libros.php: " . $e->getMessage());
 
     if ($e instanceof PDOException) {
-        if ($e->getCode() == "23000") {
+        if ((string) $e->getCode() === "23000") {
             $error = "No se pudo registrar el libro. "
                    . "Verifique el ISBN y la categoría.";
         } else {
             $error = "Ocurrió un error al guardar el libro.";
         }
+    } elseif (
+        $e instanceof Exception &&
+        $e->getMessage() === "Solicitud no autorizada."
+    ) {
+        $error = "Solicitud no autorizada.";
     } elseif ($e instanceof Exception) {
         $error = $e->getMessage();
     } else {
@@ -89,6 +109,7 @@ try {
         try {
             $libros = $libroService->listarLibros();
         } catch (Throwable $ex) {
+            error_log($ex->getMessage());
             $libros = [];
         }
     }
@@ -102,14 +123,12 @@ function escapar($valor)
         "UTF-8"
     );
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="es">
 
 <head>
     <meta charset="UTF-8">
-
     <meta
         name="viewport"
         content="width=device-width, initial-scale=1.0"
@@ -277,6 +296,13 @@ function escapar($valor)
         <h2>Registrar libro</h2>
 
         <form method="POST">
+
+            <!-- Protección CSRF -->
+            <input
+                type="hidden"
+                name="csrf_token"
+                value="<?= escapar($_SESSION['csrf_token']) ?>"
+            >
 
             <div class="fila">
 

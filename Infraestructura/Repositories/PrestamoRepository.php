@@ -1,3 +1,4 @@
+
 <?php
 
 require_once __DIR__ . '/../../Dominio/Interfaces/IPrestamoRepository.php';
@@ -8,10 +9,14 @@ class PrestamoRepository implements IPrestamoRepository
 {
     private $conexion;
 
-    public function __construct()
+    public function __construct(?PDO $conexion = null)
     {
-        $database = new Conexion();
-        $this->conexion = $database->conectar();
+        if ($conexion !== null) {
+            $this->conexion = $conexion;
+        } else {
+            $database = new Conexion();
+            $this->conexion = $database->conectar();
+        }
     }
 
     public function registrar($prestamo)
@@ -35,38 +40,80 @@ class PrestamoRepository implements IPrestamoRepository
 
         try {
             $this->conexion->beginTransaction();
-            // Descontar existencias de forma atómica.
-         // Evita prestar más unidades de las disponibles.
-$sqlStock = "UPDATE libros
-             SET stock = stock - :cantidad_descontar
-             WHERE id = :libro_id
-               AND stock >= :cantidad_verificar";
 
-$stmtStock = $this->conexion->prepare($sqlStock);
+            // Bloquear el libro para evitar operaciones
+            // simultáneas sobre su inventario.
+            $stmtLibro = $this->conexion->prepare(
+                "SELECT stock
+                 FROM libros
+                 WHERE id = :libro_id
+                 FOR UPDATE"
+            );
 
-$stmtStock->execute([
-    ':cantidad_descontar' => $cantidad,
-    ':libro_id' => $libroId,
-    ':cantidad_verificar' => $cantidad
-]);
+            $stmtLibro->execute([
+                ':libro_id' => $libroId
+            ]);
 
-            if ($stmtStock->rowCount() !== 1) {
+            $libro = $stmtLibro->fetch(PDO::FETCH_ASSOC);
+
+            if (!$libro) {
+                throw new Exception("El libro no existe.");
+            }
+
+            // Contar ejemplares apartados por reservas.
+            $stmtReservas = $this->conexion->prepare(
+                "SELECT COUNT(*)
+                 FROM reservas
+                 WHERE libro_id = :libro_id
+                   AND estado = 'DISPONIBLE'"
+            );
+
+            $stmtReservas->execute([
+                ':libro_id' => $libroId
+            ]);
+
+            $apartados = (int) $stmtReservas->fetchColumn();
+            $libres = (int) $libro['stock'] - $apartados;
+
+            if ($cantidad > $libres) {
                 throw new Exception(
-                    "El libro no existe o no tiene suficientes existencias."
+                    "No hay suficientes ejemplares libres. " .
+                    "Algunas unidades están apartadas para reservas."
                 );
             }
 
-            // Registrar el préstamo.
-            $sql = "INSERT INTO prestamos
-                    (usuario_id, fecha_prestamo,
-                     fecha_devolucion, estado)
-                    VALUES
-                    (:usuario_id, :fecha_prestamo,
-                     :fecha_devolucion, :estado)";
+            // Descontar inventario.
+            // Parámetros únicos para evitar SQLSTATE HY093.
+            $stmtStock = $this->conexion->prepare(
+                "UPDATE libros
+                 SET stock = stock - :cantidad_descontar
+                 WHERE id = :libro_id
+                   AND stock >= :cantidad_minima"
+            );
 
-            $stmt = $this->conexion->prepare($sql);
+            $stmtStock->execute([
+                ':cantidad_descontar' => $cantidad,
+                ':libro_id' => $libroId,
+                ':cantidad_minima' => $cantidad
+            ]);
 
-            $stmt->execute([
+            if ($stmtStock->rowCount() !== 1) {
+                throw new Exception(
+                    "No se pudo actualizar el inventario."
+                );
+            }
+
+            // Registrar préstamo.
+            $stmtPrestamo = $this->conexion->prepare(
+                "INSERT INTO prestamos
+                 (usuario_id, fecha_prestamo,
+                  fecha_devolucion, estado)
+                 VALUES
+                 (:usuario_id, :fecha_prestamo,
+                  :fecha_devolucion, :estado)"
+            );
+
+            $stmtPrestamo->execute([
                 ':usuario_id' => $prestamo->getIdUsuario(),
                 ':fecha_prestamo' => $prestamo->getFechaPrestamo(),
                 ':fecha_devolucion' => $prestamo->getFechaDevolucion(),
@@ -76,12 +123,12 @@ $stmtStock->execute([
             $idPrestamo = $this->conexion->lastInsertId();
 
             // Registrar detalle del préstamo.
-            $sqlDetalle = "INSERT INTO detalle_prestamos
-                           (prestamo_id, libro_id, cantidad)
-                           VALUES
-                           (:prestamo_id, :libro_id, :cantidad)";
-
-            $stmtDetalle = $this->conexion->prepare($sqlDetalle);
+            $stmtDetalle = $this->conexion->prepare(
+                "INSERT INTO detalle_prestamos
+                 (prestamo_id, libro_id, cantidad)
+                 VALUES
+                 (:prestamo_id, :libro_id, :cantidad)"
+            );
 
             $stmtDetalle->execute([
                 ':prestamo_id' => $idPrestamo,
@@ -89,7 +136,6 @@ $stmtStock->execute([
                 ':cantidad' => $cantidad
             ]);
 
-            // Confirmar las tres operaciones juntas.
             $this->conexion->commit();
 
             return $idPrestamo;
@@ -116,11 +162,7 @@ $stmtStock->execute([
 
         $fila = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$fila) {
-            return null;
-        }
-
-        return $this->crearPrestamo($fila);
+        return $fila ? $this->crearPrestamo($fila) : null;
     }
 
     public function listarTodos()
@@ -152,6 +194,7 @@ $stmtStock->execute([
                 ORDER BY p.id DESC";
 
         $stmt = $this->conexion->prepare($sql);
+
         $stmt->execute([
             ':usuario_id' => $idUsuario
         ]);
@@ -167,8 +210,6 @@ $stmtStock->execute([
 
     public function actualizar($prestamo)
     {
-        // Conservamos este método para compatibilidad.
-        // Las devoluciones deben usar registrarDevolucion().
         if ($prestamo->getEstado() === 'DEVUELTO') {
             throw new Exception(
                 "Utilice registrarDevolucion para devolver libros."
@@ -205,24 +246,25 @@ $stmtStock->execute([
         try {
             $this->conexion->beginTransaction();
 
-            // Bloquear el préstamo para evitar
-            // devoluciones simultáneas.
-            $sql = "SELECT p.estado, dp.libro_id, dp.cantidad
-                    FROM prestamos p
-                    INNER JOIN detalle_prestamos dp
-                        ON p.id = dp.prestamo_id
-                    WHERE p.id = :id
-                    FOR UPDATE";
+            // Bloquear préstamo para evitar
+            // devoluciones duplicadas.
+            $stmt = $this->conexion->prepare(
+                "SELECT p.estado, dp.libro_id, dp.cantidad
+                 FROM prestamos p
+                 INNER JOIN detalle_prestamos dp
+                     ON p.id = dp.prestamo_id
+                 WHERE p.id = :id
+                 FOR UPDATE"
+            );
 
-            $stmt = $this->conexion->prepare($sql);
-            $stmt->execute([':id' => $idPrestamo]);
+            $stmt->execute([
+                ':id' => $idPrestamo
+            ]);
 
             $fila = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$fila) {
-                throw new Exception(
-                    "El préstamo no existe."
-                );
+                throw new Exception("El préstamo no existe.");
             }
 
             if ($fila['estado'] !== 'PRESTADO') {
@@ -231,21 +273,38 @@ $stmtStock->execute([
                 );
             }
 
-            if ((int)$fila['cantidad'] <= 0) {
+            $cantidad = (int) $fila['cantidad'];
+            $libroId = (int) $fila['libro_id'];
+
+            if ($cantidad <= 0) {
                 throw new Exception(
                     "La cantidad del préstamo es inválida."
                 );
             }
 
-            // Actualizar el estado del préstamo.
-            $sqlActualizar = "UPDATE prestamos
-                              SET estado = 'DEVUELTO',
-                                  fecha_devolucion = :fecha
-                              WHERE id = :id
-                                AND estado = 'PRESTADO'";
+            // Bloquear también el libro.
+            $stmtLibro = $this->conexion->prepare(
+                "SELECT id
+                 FROM libros
+                 WHERE id = :libro_id
+                 FOR UPDATE"
+            );
 
+            $stmtLibro->execute([
+                ':libro_id' => $libroId
+            ]);
+
+            if (!$stmtLibro->fetch(PDO::FETCH_ASSOC)) {
+                throw new Exception("El libro no existe.");
+            }
+
+            // Actualizar préstamo.
             $stmtActualizar = $this->conexion->prepare(
-                $sqlActualizar
+                "UPDATE prestamos
+                 SET estado = 'DEVUELTO',
+                     fecha_devolucion = :fecha
+                 WHERE id = :id
+                   AND estado = 'PRESTADO'"
             );
 
             $stmtActualizar->execute([
@@ -259,16 +318,16 @@ $stmtStock->execute([
                 );
             }
 
-            // Restaurar las existencias del libro.
-            $sqlStock = "UPDATE libros
-                         SET stock = stock + :cantidad
-                         WHERE id = :libro_id";
-
-            $stmtStock = $this->conexion->prepare($sqlStock);
+            // Restaurar inventario.
+            $stmtStock = $this->conexion->prepare(
+                "UPDATE libros
+                 SET stock = stock + :cantidad
+                 WHERE id = :libro_id"
+            );
 
             $stmtStock->execute([
-                ':cantidad' => (int)$fila['cantidad'],
-                ':libro_id' => (int)$fila['libro_id']
+                ':cantidad' => $cantidad,
+                ':libro_id' => $libroId
             ]);
 
             if ($stmtStock->rowCount() !== 1) {
@@ -277,7 +336,92 @@ $stmtStock->execute([
                 );
             }
 
-            // Confirmar devolución e inventario juntos.
+            // Contar unidades que ya están apartadas.
+            $stmtApartados = $this->conexion->prepare(
+                "SELECT COUNT(*)
+                 FROM reservas
+                 WHERE libro_id = :libro_id
+                   AND estado = 'DISPONIBLE'"
+            );
+
+            $stmtApartados->execute([
+                ':libro_id' => $libroId
+            ]);
+
+            $apartados = (int) $stmtApartados->fetchColumn();
+
+            // Consultar el stock actualizado.
+            $stmtStockActual = $this->conexion->prepare(
+                "SELECT stock
+                 FROM libros
+                 WHERE id = :libro_id"
+            );
+
+            $stmtStockActual->execute([
+                ':libro_id' => $libroId
+            ]);
+
+            $stockActual = (int) $stmtStockActual->fetchColumn();
+
+            $libres = $stockActual - $apartados;
+
+            // Activar reservas pendientes según disponibilidad.
+            // Se atienden por fecha e ID, de la más antigua
+            // a la más reciente.
+            if ($libres > 0) {
+                $stmtPendientes = $this->conexion->prepare(
+                    "SELECT id
+                     FROM reservas
+                     WHERE libro_id = :libro_id
+                       AND estado = 'PENDIENTE'
+                     ORDER BY fecha_reserva ASC, id ASC
+                     LIMIT :limite
+                     FOR UPDATE"
+                );
+
+                $stmtPendientes->bindValue(
+                    ':libro_id',
+                    $libroId,
+                    PDO::PARAM_INT
+                );
+
+                $stmtPendientes->bindValue(
+                    ':limite',
+                    $libres,
+                    PDO::PARAM_INT
+                );
+
+                $stmtPendientes->execute();
+
+                $reservasPendientes = $stmtPendientes->fetchAll(
+                    PDO::FETCH_ASSOC
+                );
+
+                $stmtActivar = $this->conexion->prepare(
+                    "UPDATE reservas
+                     SET estado = 'DISPONIBLE',
+                         fecha_expiracion = DATE_ADD(
+                             NOW(), INTERVAL 48 HOUR
+                         )
+                     WHERE id = :id
+                       AND estado = 'PENDIENTE'"
+                );
+
+                foreach ($reservasPendientes as $reserva) {
+                    $stmtActivar->execute([
+                        ':id' => $reserva['id']
+                    ]);
+
+                    if ($stmtActivar->rowCount() !== 1) {
+                        throw new Exception(
+                            "No se pudo activar una reserva."
+                        );
+                    }
+                }
+            }
+
+            // Confirmar devolución, inventario y reservas
+            // dentro de la misma transacción.
             $this->conexion->commit();
 
             return true;
